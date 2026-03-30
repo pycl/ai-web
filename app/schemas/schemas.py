@@ -32,6 +32,8 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    #required session_id to link chat history to a specific chat session
+    session_id: int
     messages: list[Message]
     temperature: float = Field(default=0.8, le=2.0, ge=0.0)
     max_tokens: int = Field(default=100, le=10000, ge=10)
@@ -80,6 +82,25 @@ class UserResponse(APIResponseModel):
     created_at: datetime
 
 
+class ChatSessionCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Chat session title should not be empty.")
+        return cleaned
+    
+
+class ChatSessionResponse(APIResponseModel):
+    id: int
+    title: str
+    user_id: uuid.UUID
+    created_at: datetime
+
+
 class APIKeyCreateRequest(BaseModel):
     name: str = Field(min_length=3, max_length=100)
 
@@ -114,6 +135,7 @@ class ChatHistoryResponse(APIResponseModel):
     response_metadata: dict[str, object]
     user_id: Optional[uuid.UUID]
     api_key_id: Optional[int]
+    session_id: int
     created_at: datetime
 
 

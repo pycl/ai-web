@@ -25,7 +25,7 @@ import app.main as main_app
 from app.config import get_settings
 from app.database.database import get_db
 from app.ml_model.ml_model import MockLLM
-from app.models.models import APIKey, ChatHistory, User
+from app.models.models import APIKey, ChatHistory, User,ChatSession
 from app.schemas.schemas import (
     APIKeyCreatedResponse,
     APIKeyCreateRequest,
@@ -36,6 +36,8 @@ from app.schemas.schemas import (
     HealthResponse,
     UserCreateRequest,
     UserResponse,
+    ChatSessionCreateRequest,
+    ChatSessionResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -209,6 +211,85 @@ async def create_api_key(
     return api_key
 
 
+@router.post(
+    "/users/{user_id}/sessions",
+    response_model = ChatSessionResponse,
+    status_code = status.HTTP_201_CREATED,
+    tags = ["chat"],
+)
+async def create_chat_session(
+    user_id: UUID,
+    request: ChatSessionCreateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ChatSession:
+    user = await get_user_or_404(user_id, db)
+    chat_session = ChatSession(
+        title=request.title,
+        user_id=user.id,
+    )
+    db.add(chat_session)
+
+    await db.commit()
+    await db.refresh(chat_session)
+    return chat_session
+
+
+@router.get(
+    "/users/{user_id}/sessions",
+    response_model=list[ChatSessionResponse],
+    tags=["chat"],
+)
+async def list_chat_sessions(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(get_current_api_key),
+) -> list[ChatSession]:
+    ensure_user_access(user_id, api_key)
+    stmt = (
+        select(ChatSession)
+        .where(ChatSession.user_id == user_id)
+        .order_by(desc(ChatSession.created_at))
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+@router.get(
+        "/users/{user_id}/sessions/{session_id}/chat-history",
+        response_model=list[ChatHistoryResponse],
+        tags=["chat"],
+)
+
+async def list_chat_session_history(
+    user_id: UUID,
+    session_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(get_current_api_key),
+) -> list[ChatHistory]:
+    ensure_user_access(user_id, api_key)
+
+    session_stmt = select(ChatSession).where(
+        ChatSession.id == session_id,
+        ChatSession.user_id == user_id,
+    )
+    chat_session = (await db.execute(session_stmt)).scalar_one_or_none()
+    if chat_session is None:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail = "Chat session not found for this user.",
+        )
+
+    stmt = (
+        select(ChatHistory)
+        .where(
+            ChatHistory.session_id == session_id,
+            ChatHistory.user_id == user_id,
+            )
+        .order_by(desc(ChatHistory.created_at))
+        .limit(limit)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
 @router.get(
     "/users/{user_id}/api-keys",
     response_model=list[APIKeyResponse],
@@ -261,6 +342,17 @@ async def chat(
     api_key: APIKey = Depends(get_current_api_key),
     model: MockLLM = Depends(get_llm),
 ) -> ChatResponse:
+    session_stmt = select(ChatSession).where(
+        ChatSession.id == request.session_id,
+        ChatSession.user_id == api_key.owner_id,
+    )
+    chat_session = (await db.execute(session_stmt)).scalar_one_or_none()
+    if chat_session is None:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail = "Chat session not found for this user.",
+        )
+
     user_prompt = request.messages[-1].message
 
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
@@ -275,6 +367,7 @@ async def chat(
     chat_entry = ChatHistory(
         user_id=api_key.owner_id,
         api_key_id=api_key.id,
+        session_id = chat_session.id,
         messages=[message.model_dump() for message in request.messages],
         user_prompt=user_prompt,
         assistant_prompt=response_text,
@@ -312,6 +405,17 @@ async def chat_streaming(
     api_key: APIKey = Depends(get_current_api_key),
     model: MockLLM = Depends(get_llm),
 ) -> StreamingResponse:
+    session_stmt = select(ChatSession).where(
+        ChatSession.id == request.session_id,
+        ChatSession.user_id == api_key.owner_id,
+    )
+    chat_session = (await db.execute(session_stmt)).scalar_one_or_none()
+    if chat_session is None:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail = "Chat session not found for this user.",
+        )
+
     user_prompt = request.messages[-1].message
 
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
@@ -329,6 +433,7 @@ async def chat_streaming(
 
         chat_entry = ChatHistory(
             user_id=api_key.owner_id,
+            session_id = chat_session.id,
             api_key_id=api_key.id,
             messages=[message.model_dump() for message in request.messages],
             user_prompt=user_prompt,
