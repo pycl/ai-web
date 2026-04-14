@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 import app.main as main_app
 from app.config import get_settings
 from app.database.database import get_db
-from app.ml_model.ml_model import MockLLM
+from app.ml_model.ml_model import BaseLLM
 from app.models.models import APIKey, ChatHistory, User,ChatSession
 from app.schemas.schemas import (
     APIKeyCreatedResponse,
@@ -48,7 +48,7 @@ api_key_header = APIKeyHeader(name=settings.API_KEY_HEADER_NAME, auto_error=Fals
 bearer_security = HTTPBearer(auto_error=False)
 
 
-def get_llm() -> MockLLM:
+def get_llm() -> BaseLLM:
     return main_app.ml_model_state["ml_model"]
 
 
@@ -124,9 +124,11 @@ def schedule_chat_audit(
 
 
 def build_chat_metadata(
-    request: ChatRequest, model: MockLLM, *, streamed: bool
+    request: ChatRequest, model: BaseLLM, *, streamed: bool
 ) -> dict[str, object]:
     return {
+        "llm_mode": settings.LLM_MODE,
+        "provider_name": model.provider_name,
         "model_name": model.model_name,
         "message_count": request.message_count,
         "streamed": streamed,
@@ -340,7 +342,7 @@ async def chat(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(get_current_api_key),
-    model: MockLLM = Depends(get_llm),
+    model: BaseLLM = Depends(get_llm),
 ) -> ChatResponse:
     session_stmt = select(ChatSession).where(
         ChatSession.id == request.session_id,
@@ -354,12 +356,13 @@ async def chat(
         )
 
     user_prompt = request.messages[-1].message
+    message_payload = [message.model_dump() for message in request.messages]
 
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
         raise main_app.ContextLengthExceeded(settings.MAX_PROMPT_LENGTH)
 
     response_text = await model.generate(
-        prompt=user_prompt,
+        messages=message_payload,
         temperature=request.temperature,
         max_tokens=request.max_tokens,
     )
@@ -368,7 +371,7 @@ async def chat(
         user_id=api_key.owner_id,
         api_key_id=api_key.id,
         session_id = chat_session.id,
-        messages=[message.model_dump() for message in request.messages],
+        messages=message_payload,
         user_prompt=user_prompt,
         assistant_prompt=response_text,
         temperature=request.temperature,
@@ -403,7 +406,7 @@ async def chat_streaming(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(get_current_api_key),
-    model: MockLLM = Depends(get_llm),
+    model: BaseLLM = Depends(get_llm),
 ) -> StreamingResponse:
     session_stmt = select(ChatSession).where(
         ChatSession.id == request.session_id,
@@ -417,17 +420,29 @@ async def chat_streaming(
         )
 
     user_prompt = request.messages[-1].message
+    message_payload = [message.model_dump() for message in request.messages]
 
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
         raise main_app.ContextLengthExceeded(settings.MAX_PROMPT_LENGTH)
 
+    stream_iterator = model.generate_stream(
+        messages=message_payload,
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+    )
+#we need to pull the first token from the stream to ensure that the LLM has started generating and to handle the case where the LLM might return an empty response (e.g., due to an error or if the prompt is too long). This allows us to avoid creating a chat history entry with an empty assistant response.
+    try:
+        first_token = await anext(stream_iterator)
+    except StopAsyncIteration:
+        first_token = None
+
     async def stream_response():
         collected_tokens: list[str] = []
-        async for token in model.generate_stream(
-            prompt=user_prompt,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-        ):
+        if first_token is not None:
+            collected_tokens.append(first_token)
+            yield first_token
+
+        async for token in stream_iterator:
             collected_tokens.append(token)
             yield token
 
@@ -435,7 +450,7 @@ async def chat_streaming(
             user_id=api_key.owner_id,
             session_id = chat_session.id,
             api_key_id=api_key.id,
-            messages=[message.model_dump() for message in request.messages],
+            messages=message_payload,
             user_prompt=user_prompt,
             assistant_prompt="".join(collected_tokens).strip(),
             temperature=request.temperature,

@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.ml_model.ml_model import MockLLM
+from app.ml_model.factory import create_llm
+from app.ml_model.ml_model import LLMProviderError
 from app.routers.router import router
 
 settings = get_settings()
@@ -28,7 +29,7 @@ ml_model_state: dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ml_model_state["ml_model"] = MockLLM()
+    ml_model_state["ml_model"] = create_llm(settings)
     logger.info("Server is ready to accept connections.")
     yield
     ml_model_state.clear()
@@ -58,6 +59,24 @@ async def context_length_handler(request: Request, exc: ContextLengthExceeded):
     return JSONResponse(
         status_code=400,
         content={"error": f"Input message is greater than {exc.limit} symbols."},
+    )
+
+
+@app.exception_handler(LLMProviderError)
+async def llm_provider_error_handler(request: Request, exc: LLMProviderError):
+    logger.error(
+        "LLM provider `%s` request failed with status `%s`: %s",
+        exc.provider,
+        exc.status_code,
+        exc.message,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.message,
+            "provider": exc.provider,
+            "details": exc.details,
+        },
     )
 
 
