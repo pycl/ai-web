@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_llm(settings: Settings) -> BaseLLM:
+    # ML logic isolation: select MockLLM or real provider from config so routers do not know provider details.
     mode = settings.LLM_MODE.strip().lower()
 
     if mode == "mock":

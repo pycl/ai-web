@@ -30,6 +30,7 @@ ml_model_state: dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Context lifecycle management: load the lightweight model resource during FastAPI lifespan startup.
     ml_model_state["ml_model"] = create_llm(settings)
     logger.info("Server is ready to accept connections.")
     yield
@@ -55,6 +56,7 @@ class ContextLengthExceeded(Exception):
 
 @app.exception_handler(ContextLengthExceeded)
 async def context_length_handler(request: Request, exc: ContextLengthExceeded):
+    # Error handling: return clear JSON and HTTP 400 when the prompt is too long.
     logger.error("LLM context overflow")
 
     return JSONResponse(
@@ -69,6 +71,7 @@ async def context_length_handler(request: Request, exc: ContextLengthExceeded):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    # Error handling: normalize FastAPI HTTPException responses as JSON.
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -81,6 +84,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Error handling: return HTTP 422 with details for Pydantic validation errors.
     return JSONResponse(
         status_code=422,
         content={
@@ -93,6 +97,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(LLMProviderError)
 async def llm_provider_error_handler(request: Request, exc: LLMProviderError):
+    # Error handling: return clear JSON and upstream status code for LLM provider failures.
     logger.error(
         "LLM provider `%s` request failed with status `%s`: %s",
         exc.provider,
@@ -112,6 +117,7 @@ async def llm_provider_error_handler(request: Request, exc: LLMProviderError):
 
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
+    # Logging: record each HTTP request processing time in the response header.
     started_at = time.perf_counter()
     response = await call_next(request)
     process_time_ms = (time.perf_counter() - started_at) * 1000

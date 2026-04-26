@@ -23,6 +23,7 @@ class LLMProviderError(Exception):
 
 
 class BaseLLM(Protocol):
+    # ML logic isolation: all model providers implement the same generate/generate_stream interface.
     provider_name: str
     model_name: str
 
@@ -44,6 +45,7 @@ class BaseLLM(Protocol):
 
 
 class MockLLM:
+    # ML logic isolation: Mock model generation details are isolated in this class.
     provider_name = "mock"
     model_name = "MockLLM"
 
@@ -51,6 +53,7 @@ class MockLLM:
         logger.info("[Weights are loading].")
         time.sleep(0.2)
         logger.info("[Weights are loaded].")
+        # Resource management: use a semaphore to limit concurrent generations.
         self.semaphore = asyncio.Semaphore(2)
 
     @staticmethod
@@ -78,6 +81,7 @@ class MockLLM:
         temperature: float,
         max_tokens: int,
     ) -> str:
+        # Logging: record the MockLLM normal generation process.
         prompt = self._extract_prompt(messages)
         tokens = self._build_response_tokens(prompt, temperature, max_tokens)
 
@@ -95,6 +99,7 @@ class MockLLM:
         temperature: float,
         max_tokens: int,
     ) -> AsyncIterator[str]:
+        # ML logic isolation: MockLLM exposes the unified streaming generation interface.
         prompt = self._extract_prompt(messages)
         tokens = self._build_response_tokens(prompt, temperature, max_tokens)
 

@@ -19,6 +19,7 @@ class APIResponseModel(BaseModel):
 
 
 class Message(BaseModel):
+    # Data validation: Pydantic schema defines message types, constraints, descriptions, and examples.
     message: str = Field(
         min_length=1,
         max_length=5000,
@@ -40,6 +41,7 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    # Data validation: chat request schema constrains session, messages, temperature, and max_tokens.
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
@@ -97,6 +99,7 @@ class ChatRequest(BaseModel):
 
 
 class UserCreateRequest(BaseModel):
+    # Data validation: user creation schema constrains username and email.
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [{"username": "student01", "email": "student01@example.com"}]
@@ -139,6 +142,7 @@ class UserResponse(APIResponseModel):
 
 
 class ChatSessionCreateRequest(BaseModel):
+    # Data validation: chat session schema constrains title length and provides an example.
     model_config = ConfigDict(
         json_schema_extra={"examples": [{"title": "Course project demo"}]}
     )
@@ -166,6 +170,7 @@ class ChatSessionResponse(APIResponseModel):
 
 
 class APIKeyCreateRequest(BaseModel):
+    # Data validation: API key creation schema constrains name length and provides an example.
     model_config = ConfigDict(
         json_schema_extra={"examples": [{"name": "streamlit-ui"}]}
     )

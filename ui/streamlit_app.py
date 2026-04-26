@@ -26,6 +26,8 @@ def request_json(
     json_body: Optional[dict[str, Any]] = None,
     params: Optional[dict[str, Any]] = None,
 ) -> Any:
+    # Loose coupling: UI calls the backend only through REST API and does not import backend code.
+    # Network isolation: UI does not directly access the database or Redis.
     headers = None
     if api_key:
         headers = {API_KEY_HEADER: api_key}
@@ -40,6 +42,7 @@ def request_json(
                 params=params,
             )
     except httpx.RequestError as exc:
+        # Failure handling: show a friendly message when the backend is unavailable.
         raise ApiError("Backend is not available. Please check the API service.") from exc
 
     if response.status_code >= 400:
@@ -50,6 +53,7 @@ def request_json(
 
         message = payload.get("error") or payload.get("detail") or response.text
         if response.status_code == 503:
+            # Failure handling: show a temporary-unavailable message for HTTP 503.
             message = "Backend is temporarily unavailable. Please retry later."
         raise ApiError(message, response.status_code)
 
@@ -87,6 +91,7 @@ def init_state() -> None:
 
 
 def render_health() -> None:
+    # Visual UI: interact with the /health backend endpoint.
     try:
         health = request_json("GET", "/health")
     except ApiError as exc:
@@ -112,6 +117,7 @@ def continue_with_account(username: str, email: str) -> None:
     cleaned_email = email.strip().lower()
 
     try:
+        # Visual UI: interact with the /users/by-email backend endpoint.
         user = request_json("GET", "/users/by-email", params={"email": cleaned_email})
         st.info("Existing user loaded.")
     except ApiError as exc:
@@ -130,6 +136,7 @@ def continue_with_account(username: str, email: str) -> None:
                 raise
 
             user = request_json(
+                # Visual UI: interact with the /users backend endpoint.
                 "POST",
                 "/users",
                 json_body={"username": cleaned_username, "email": cleaned_email},
@@ -182,6 +189,7 @@ def create_new_chat() -> None:
 
     title = "New chat " + datetime.now().strftime("%H:%M:%S")
     session = request_json(
+        # Visual UI: interact with the /users/{user_id}/sessions backend endpoint.
         "POST",
         f"/users/{st.session_state.user_id}/sessions",
         api_key=st.session_state.api_key,
@@ -208,6 +216,7 @@ def render_account() -> None:
             return
 
         with st.spinner("Preparing account"):
+            # Async UX: show a spinner while the backend prepares the account.
             try:
                 continue_with_account(username.strip(), email.strip())
             except ApiError as exc:
@@ -222,6 +231,7 @@ def render_sessions() -> None:
 
     if st.sidebar.button("New chat", use_container_width=True):
         with st.spinner("Creating new chat"):
+            # Async UX: show a spinner while the backend creates a new chat session.
             try:
                 create_new_chat()
             except ApiError as exc:
@@ -257,6 +267,7 @@ def render_sessions() -> None:
     if st.session_state.session_id != selected_session_id:
         st.session_state.session_id = selected_session_id
         with st.spinner("Loading chat history"):
+            # Async UX: show a spinner while the backend loads chat history.
             try:
                 load_history(selected_session_id)
             except ApiError as exc:
@@ -276,6 +287,7 @@ def render_developer_info() -> None:
             st.metric("Output characters", st.session_state.last_stats["output_chars"])
             st.metric("Messages sent", st.session_state.last_stats["message_count"])
             st.bar_chart(
+                # Visualization: chart the context and output length for the latest model call.
                 {
                     "context": [st.session_state.last_stats["context_chars"]],
                     "output": [st.session_state.last_stats["output_chars"]],
@@ -328,8 +340,10 @@ def render_chat() -> None:
 
     with st.chat_message("assistant"):
         with st.spinner("Generating response"):
+            # Async UX: show a spinner while the model response is being generated.
             try:
                 result = request_json(
+                    # Visual UI: interact with the /chat backend endpoint.
                     "POST",
                     "/chat",
                     api_key=st.session_state.api_key,

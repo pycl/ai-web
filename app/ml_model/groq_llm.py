@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class GroqLLM:
+    # ML logic isolation: real LLM provider calls are isolated in this class.
     provider_name = "groq"
 
     def __init__(
@@ -98,6 +99,7 @@ class GroqLLM:
         max_tokens: int,
         stream: bool,
     ) -> dict[str, object]:
+        # Resource management: pass max_tokens as the provider-supported generation limit.
         safe_temperature = max(temperature, 1e-8)
         return {
             "model": self.model_name,
@@ -116,6 +118,7 @@ class GroqLLM:
         temperature: float,
         max_tokens: int,
     ) -> str:
+        # ML logic isolation: unified normal generation method wraps the real provider call.
         payload = self._build_payload(
             messages=messages,
             temperature=temperature,
@@ -148,6 +151,7 @@ class GroqLLM:
         temperature: float,
         max_tokens: int,
     ) -> AsyncIterator[str]:
+        # ML logic isolation: unified streaming method wraps provider streaming response parsing.
         payload = self._build_payload(
             messages=messages,
             temperature=temperature,

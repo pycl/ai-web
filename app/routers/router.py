@@ -50,6 +50,7 @@ bearer_security = HTTPBearer(auto_error=False)
 
 
 def get_llm() -> BaseLLM:
+    # ML logic isolation: API receives one unified model interface from app state.
     return main_app.ml_model_state["ml_model"]
 
 
@@ -60,6 +61,7 @@ async def get_current_api_key(
         bearer_security
     ),
 ) -> APIKey:
+    # 已实现的后端 API：API key 鉴权，保护用户会话和聊天历史端点。
     token = header_api_key
     if token is None and bearer_credentials is not None:
         token = bearer_credentials.credentials
@@ -127,6 +129,7 @@ def schedule_chat_audit(
 def build_chat_metadata(
     request: ChatRequest, model: BaseLLM, *, streamed: bool
 ) -> dict[str, object]:
+    # ML logic isolation: store provider/model/streaming metadata without depending on model internals.
     return {
         "llm_mode": settings.LLM_MODE,
         "provider_name": model.provider_name,
@@ -138,6 +141,7 @@ def build_chat_metadata(
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
 async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
+    # 已实现的后端 API：健康检查端点，验证数据库和模型加载状态。
     await db.execute(text("SELECT 1"))
     return HealthResponse(
         status="ok",
@@ -156,6 +160,7 @@ async def create_user(
     request: UserCreateRequest,
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    # 已实现的后端 API：用户创建端点。
     user = User(username=request.username, email=request.email)
     db.add(user)
 
@@ -224,6 +229,7 @@ async def create_api_key(
     request: APIKeyCreateRequest,
     db: AsyncSession = Depends(get_db),
 ) -> APIKey:
+    # 已实现的后端 API：为用户创建系统内部 API key。
     user = await get_user_or_404(user_id, db)
     api_key = APIKey(
         name=request.name,
@@ -257,6 +263,7 @@ async def create_chat_session(
     request: ChatSessionCreateRequest,
     db: AsyncSession = Depends(get_db),
 ) -> ChatSession:
+    # 已实现的后端 API：创建多会话聊天中的 ChatSession。
     user = await get_user_or_404(user_id, db)
     chat_session = ChatSession(
         title=request.title,
@@ -279,6 +286,7 @@ async def list_chat_sessions(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(get_current_api_key),
 ) -> list[ChatSession]:
+    # 已实现的后端 API：列出指定用户的全部 ChatSession。
     ensure_user_access(user_id, api_key)
     stmt = (
         select(ChatSession)
@@ -299,6 +307,7 @@ async def get_chat_session(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(get_current_api_key),
 ) -> ChatSession:
+    # 已实现的后端 API：读取单个 ChatSession。
     ensure_user_access(user_id, api_key)
     stmt = select(ChatSession).where(
         ChatSession.id == session_id,
@@ -326,6 +335,7 @@ async def list_chat_session_history(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(get_current_api_key),
 ) -> list[ChatHistory]:
+    # 已实现的后端 API：按 ChatSession 查询聊天历史。
     ensure_user_access(user_id, api_key)
 
     session_stmt = select(ChatSession).where(
@@ -403,6 +413,7 @@ async def chat(
     api_key: APIKey = Depends(get_current_api_key),
     model: BaseLLM = Depends(get_llm),
 ) -> ChatResponse:
+    # Logging: record normal chat request, model call, and database write timings.
     request_started_at = time.perf_counter()
     logger.info("Chat request started for user `%s`.", api_key.owner_id)
 
@@ -421,8 +432,10 @@ async def chat(
     message_payload = [message.model_dump() for message in request.messages]
 
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
+        # Resource management: limit prompt length to keep request context under control.
         raise main_app.ContextLengthExceeded(settings.MAX_PROMPT_LENGTH)
 
+    # ML logic isolation: API only calls the unified generate() method.
     model_started_at = time.perf_counter()
     logger.info(
         "Calling model `%s` from provider `%s`.",
@@ -489,6 +502,7 @@ async def chat_streaming(
     api_key: APIKey = Depends(get_current_api_key),
     model: BaseLLM = Depends(get_llm),
 ) -> StreamingResponse:
+    # Logging: record streaming chat request, model call, and database write timings.
     request_started_at = time.perf_counter()
     logger.info("Streaming chat request started for user `%s`.", api_key.owner_id)
 
@@ -507,8 +521,10 @@ async def chat_streaming(
     message_payload = [message.model_dump() for message in request.messages]
 
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
+        # Resource management: limit prompt length to keep streaming context under control.
         raise main_app.ContextLengthExceeded(settings.MAX_PROMPT_LENGTH)
 
+    # ML logic isolation: API only calls the unified generate_stream() method.
     model_started_at = time.perf_counter()
     logger.info(
         "Calling streaming model `%s` from provider `%s`.",

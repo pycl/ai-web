@@ -30,6 +30,7 @@
 ```bash
 cp .env.example .env
 ```
+Добавите свой API из Groq в .env
 
 Запустите весь проект:
 
