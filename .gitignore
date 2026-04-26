@@ -1,7 +1,14 @@
 .DS_Store
+.env
+.env-*
+!.env.example
+
 # Python-generated files
 __pycache__/
 *.py[oc]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 build/
 dist/
 wheels/
@@ -9,4 +16,12 @@ wheels/
 
 # Virtual environments
 .venv
-.env
+
+# Local data and large model artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.bin
+*.pt
+*.pth
+*.safetensors

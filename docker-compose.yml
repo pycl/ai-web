@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.9-alpine}
+    container_name: ai_web_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_web_db}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_web_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
+    container_name: ai_web_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_web_db}
+      APP_TITLE: ${APP_TITLE:-Multi-session LLM Chat Service}
+      MAX_PROMPT_LENGTH: ${MAX_PROMPT_LENGTH:-5000}
+      API_KEY_HEADER_NAME: ${API_KEY_HEADER_NAME:-X-API-Key}
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-llama-3.1-8b-instant}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      CORS_ALLOW_ORIGINS: '["http://localhost:${UI_PORT:-8501}","http://127.0.0.1:${UI_PORT:-8501}","http://localhost:3000","http://127.0.0.1:3000"]'
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  ui:
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
+    container_name: ai_web_ui
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://api:8000
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    depends_on:
+      - api
+    command: sh -c "uv run streamlit run ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501"
+
+volumes:
+  postgres_data:

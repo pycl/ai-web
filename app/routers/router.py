@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 from typing import Optional
 from uuid import UUID
 
@@ -25,7 +26,7 @@ import app.main as main_app
 from app.config import get_settings
 from app.database.database import get_db
 from app.ml_model.ml_model import BaseLLM
-from app.models.models import APIKey, ChatHistory, User,ChatSession
+from app.models.models import APIKey, ChatHistory, User, ChatSession
 from app.schemas.schemas import (
     APIKeyCreatedResponse,
     APIKeyCreateRequest,
@@ -172,6 +173,38 @@ async def create_user(
     return user
 
 
+@router.get("/users/by-email", response_model=UserResponse, tags=["users"])
+async def get_user_by_email(
+    email: str = Query(min_length=5, max_length=50),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    cleaned_email = email.strip().lower()
+    stmt = select(User).where(User.email == cleaned_email)
+    user = (await db.execute(stmt)).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User was not found.",
+        )
+    return user
+
+
+@router.get("/users/by-username", response_model=UserResponse, tags=["users"])
+async def get_user_by_username(
+    username: str = Query(min_length=3, max_length=50),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    cleaned_username = username.strip()
+    stmt = select(User).where(User.username == cleaned_username)
+    user = (await db.execute(stmt)).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User was not found.",
+        )
+    return user
+
+
 @router.get("/users/{user_id}", response_model=UserResponse, tags=["users"])
 async def get_user(
     user_id: UUID,
@@ -253,6 +286,32 @@ async def list_chat_sessions(
         .order_by(desc(ChatSession.created_at))
     )
     return list((await db.execute(stmt)).scalars().all())
+
+
+@router.get(
+    "/users/{user_id}/sessions/{session_id}",
+    response_model=ChatSessionResponse,
+    tags=["chat"],
+)
+async def get_chat_session(
+    user_id: UUID,
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(get_current_api_key),
+) -> ChatSession:
+    ensure_user_access(user_id, api_key)
+    stmt = select(ChatSession).where(
+        ChatSession.id == session_id,
+        ChatSession.user_id == user_id,
+    )
+    chat_session = (await db.execute(stmt)).scalar_one_or_none()
+    if chat_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found for this user.",
+        )
+    return chat_session
+
 
 @router.get(
         "/users/{user_id}/sessions/{session_id}/chat-history",
@@ -344,6 +403,9 @@ async def chat(
     api_key: APIKey = Depends(get_current_api_key),
     model: BaseLLM = Depends(get_llm),
 ) -> ChatResponse:
+    request_started_at = time.perf_counter()
+    logger.info("Chat request started for user `%s`.", api_key.owner_id)
+
     session_stmt = select(ChatSession).where(
         ChatSession.id == request.session_id,
         ChatSession.user_id == api_key.owner_id,
@@ -361,12 +423,23 @@ async def chat(
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
         raise main_app.ContextLengthExceeded(settings.MAX_PROMPT_LENGTH)
 
+    model_started_at = time.perf_counter()
+    logger.info(
+        "Calling model `%s` from provider `%s`.",
+        model.model_name,
+        model.provider_name,
+    )
     response_text = await model.generate(
         messages=message_payload,
         temperature=request.temperature,
         max_tokens=request.max_tokens,
     )
+    logger.info(
+        "Model call completed in %.1f ms.",
+        (time.perf_counter() - model_started_at) * 1000,
+    )
 
+    db_started_at = time.perf_counter()
     chat_entry = ChatHistory(
         user_id=api_key.owner_id,
         api_key_id=api_key.id,
@@ -382,6 +455,10 @@ async def chat(
     db.add(chat_entry)
     await db.commit()
     await db.refresh(chat_entry)
+    logger.info(
+        "Chat history write completed in %.1f ms.",
+        (time.perf_counter() - db_started_at) * 1000,
+    )
 
     background_tasks.add_task(
         schedule_chat_audit,
@@ -390,6 +467,10 @@ async def chat(
         streamed=False,
     )
 
+    logger.info(
+        "Chat request completed in %.1f ms.",
+        (time.perf_counter() - request_started_at) * 1000,
+    )
     return ChatResponse(
         id=chat_entry.id,
         user_id=api_key.owner_id,
@@ -408,6 +489,9 @@ async def chat_streaming(
     api_key: APIKey = Depends(get_current_api_key),
     model: BaseLLM = Depends(get_llm),
 ) -> StreamingResponse:
+    request_started_at = time.perf_counter()
+    logger.info("Streaming chat request started for user `%s`.", api_key.owner_id)
+
     session_stmt = select(ChatSession).where(
         ChatSession.id == request.session_id,
         ChatSession.user_id == api_key.owner_id,
@@ -425,6 +509,12 @@ async def chat_streaming(
     if len(user_prompt) > settings.MAX_PROMPT_LENGTH:
         raise main_app.ContextLengthExceeded(settings.MAX_PROMPT_LENGTH)
 
+    model_started_at = time.perf_counter()
+    logger.info(
+        "Calling streaming model `%s` from provider `%s`.",
+        model.model_name,
+        model.provider_name,
+    )
     stream_iterator = model.generate_stream(
         messages=message_payload,
         temperature=request.temperature,
@@ -446,6 +536,7 @@ async def chat_streaming(
             collected_tokens.append(token)
             yield token
 
+        db_started_at = time.perf_counter()
         chat_entry = ChatHistory(
             user_id=api_key.owner_id,
             session_id = chat_session.id,
@@ -461,6 +552,15 @@ async def chat_streaming(
         db.add(chat_entry)
         await db.commit()
         await db.refresh(chat_entry)
+        logger.info(
+            "Streaming model and DB write completed in %.1f ms; DB write %.1f ms.",
+            (time.perf_counter() - model_started_at) * 1000,
+            (time.perf_counter() - db_started_at) * 1000,
+        )
         schedule_chat_audit(chat_entry.id, api_key.owner_id, streamed=True)
+        logger.info(
+            "Streaming chat request completed in %.1f ms.",
+            (time.perf_counter() - request_started_at) * 1000,
+        )
 
     return StreamingResponse(stream_response(), media_type="text/plain")
